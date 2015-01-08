@@ -68,54 +68,8 @@ app.use(bodyParser.json());
 app.listen(9000);
 
 app.get('/tweet', function(req, res) {
-	mongo.connect(mongoUrl, function(err, db) 
-	{
-		if(err != null)
-		{
-			res.send("failed to connect to db");
-			return;
-		}
-		var users = db.collection("users");
-		users.findOne({ username : "shakespeareb2" }, function(dbErr, doc)
-		{
-			if(dbErr != null)
-			{
-				res.send("failed to find user");
-				return;
-			}
-			var twitterAccessToken = doc.token;
-			var twitterAccessTokenSecret = doc.tokenSecret;
-
-			twitterOAuth.post(
-				"https://api.twitter.com/1.1/statuses/update.json",
-				twitterAccessToken, twitterAccessTokenSecret,
-			{"status":"Hello World!"},
-			function(error, data)
-			{
-				if(error) res.send(console.log(error));
-				else res.send(data)
-			});
-		/*
-		   var apiUrl = "https://api.twitter.com/1.1/statuses/update.json" + "?status=" + encodeURIComponent("hello world!");  
-		   requestLib.post(
-		   { url : apiUrl,
-oauth : { consumer_key : twitterConsumerKey,
-consumer_secret: twitterConsumerSecret,
-token : userToken,
-token_secret : userSecret }},
-function (error, response, body)
-{
-if(!error && response.statusCode == 200)
-{
-res.send('tweeted: hello world: ' + body.screen_name + '/' + body.id_str);
-}
-else
-{
-res.send('failed to tweet' + JSON.stringify(body));
-}
-});*/
-		});
-	});
+	tweetAllUsers();
+	res.send("tweeted all users");
 });
 
 app.get('/recent-tweets', function(req, res)
@@ -169,3 +123,91 @@ function addTwitterUser(username, token, tokenSecret, callback)
 	});
 }
 
+function tweetAllUsers()
+{
+	mongo.connect(mongoUrl, function(connectErr, db)
+	{
+		if(connectErr != null)
+		{
+			console.log(err.message);
+			return;
+		}
+		var users = db.collection("users");
+		var usersStream = users.find().stream();
+		var doneInserting = false;
+		var insertCount = 0;
+		usersStream.on("end", function() {
+			doneInserting = true;
+		});
+
+		usersStream.on("data", function(doc) {
+			insertCount++;
+			var tweet = generateShakespeareTweet();
+			tweetOnBehalf(doc.token, doc.tokenSecret, tweet, function(tweetErr, data, res) {
+				if(tweetErr)
+					console.log("failed to tweet on behalf of user " + doc.username + ": " + tweetErr.message);
+				else
+				{	
+					var tweets = db.collection("tweets");	
+					tweets.insert( { "username" : doc.username, "tweet" : tweet, tweetId : JSON.parse(data).id_str }, function(insertErr, doc2)
+						{
+							if(insertErr)
+								console.log("failed to insert tweet in db: ", insertErr.message);
+							if(--insertCount === 0 && doneInserting)
+								db.close();
+						});
+				}
+			});
+		});
+	});
+}
+function tweetOnBehalf(accessToken, accessTokenSecret, tweet, callback)
+{
+	twitterOAuth.post("https://api.twitter.com/1.1/statuses/update.json",
+			  accessToken,
+			  accessTokenSecret,
+			  { "status" : tweet },
+			  callback);
+}
+
+function generateShakespeareTweet()
+{
+	var wordLengthCumulativeProbability = [0.0574574,0.199017852,0.37743256,
+						0.548329383,0.689170805,0.794711216,
+						0.868774145,0.918309833,0.95024724,
+						0.970250957,0.98249012,0.989835177,
+						0.994172152,0.996697803,0.998151198,
+						0.998978925,0.999446045,0.999707541,
+						0.999852876,0.999933131];
+	var letters = "abcdefghijklmnopqrstuvwxyz";
+
+        var statement = "";
+        var currentWordLength = 0;
+        for(var i = 0; i < 140; i++)
+        {
+                //word length distribution pulled from this article http://plus.maths.org/content/mystery-zipf
+                //y = 0.11726*x^2.33*0.49^x where x is word length
+                //I couldn't figure out the inverse of the integral of this function so I just did it numerically, even so, there's probably a better way to do this
+                var addedSpace = false;
+                if(currentWordLength > 0)
+                {
+                        var prob =  Math.random();
+                        for(var j = 0; j < currentWordLength; j++)
+                        {
+                                if(prob < wordLengthCumulativeProbability[j])
+                                {
+                                        statement += " ";
+                                        addedSpace = true;
+                                        currentWordLength = 0;
+                                        break;
+                                }
+                        }
+                }
+                if(!addedSpace)
+                {
+                        statement += letters.charAt(Math.floor(Math.random() * letters.length));
+                        currentWordLength++;
+                }
+	}
+	return statement;
+}
